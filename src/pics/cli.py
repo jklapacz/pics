@@ -11,10 +11,23 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
+
 __version__ = "0.1.0"
 
 # Weekly photo schedule - starting Wed Nov 13, 2024
 WEEKLY_START_DATE = datetime(2024, 11, 13)  # Wednesday, November 13, 2024
+
+# Initialize rich console
+console = Console()
 
 
 def extract_number_from_filename(filename: str) -> Optional[int]:
@@ -132,7 +145,7 @@ def is_weekly_photo_day(date: datetime) -> bool:
 
 def find_all_image_files(directory: Path) -> List[Path]:
     """
-    Recursively find all image files in a directory.
+    Recursively find all image files in a directory with progress indication.
 
     Args:
         directory: Directory to search
@@ -143,9 +156,21 @@ def find_all_image_files(directory: Path) -> List[Path]:
     image_files = []
     image_extensions = {".jpg", ".jpeg", ".cr3", ".raw", ".png", ".tiff", ".tif"}
 
-    for file_path in directory.rglob("*"):
-        if file_path.is_file() and file_path.suffix.lower() in image_extensions:
-            image_files.append(file_path)
+    console.print(f"🔍 Scanning for image files in {directory}...")
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        scan_task = progress.add_task("Scanning directories...", total=None)
+
+        for file_path in directory.rglob("*"):
+            if file_path.is_file() and file_path.suffix.lower() in image_extensions:
+                image_files.append(file_path)
+                progress.update(
+                    scan_task, description=f"Found {len(image_files)} images..."
+                )
 
     return image_files
 
@@ -202,114 +227,164 @@ def import_photos(
     image_files = find_all_image_files(source_path)
 
     if not image_files:
-        print("No image files found in source directory")
+        console.print("❌ No image files found in source directory")
         return
 
-    print(f"Found {len(image_files)} image files")
+    console.print(f"✅ Found {len(image_files)} image files")
 
-    # Group files by week
+    # Group files by week with progress
     weekly_groups: Dict[int, List[Path]] = {}
     filtered_files = []
 
-    for file_path in image_files:
-        file_date = get_file_date(file_path)
+    console.print("🔄 Processing and filtering files...")
 
-        if not file_date:
-            print(f"Warning: Could not determine date for {file_path.name}, skipping")
-            continue
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        filter_task = progress.add_task("Filtering files...", total=len(image_files))
 
-        # Apply after_date filter
-        if after_datetime and file_date < after_datetime:
-            continue
+        for file_path in image_files:
+            file_date = get_file_date(file_path)
 
-        # Apply weekly filter
-        if weekly and not is_weekly_photo_day(file_date):
-            continue
+            if not file_date:
+                console.print(
+                    f"⚠️  Warning: Could not determine date for {file_path.name}, skipping"
+                )
+                progress.advance(filter_task)
+                continue
 
-        filtered_files.append(file_path)
-        week_number = calculate_week_number(file_date)
+            # Apply after_date filter
+            if after_datetime and file_date < after_datetime:
+                progress.advance(filter_task)
+                continue
 
-        if week_number not in weekly_groups:
-            weekly_groups[week_number] = []
-        weekly_groups[week_number].append(file_path)
+            # Apply weekly filter
+            if weekly and not is_weekly_photo_day(file_date):
+                progress.advance(filter_task)
+                continue
+
+            filtered_files.append(file_path)
+            week_number = calculate_week_number(file_date)
+
+            if week_number not in weekly_groups:
+                weekly_groups[week_number] = []
+            weekly_groups[week_number].append(file_path)
+
+            progress.advance(filter_task)
 
     if not filtered_files:
         if weekly:
-            print("No photos found from weekly photo days (Wednesdays)")
+            console.print("❌ No photos found from weekly photo days (Wednesdays)")
         elif after_datetime:
-            print(f"No photos found after {after_date}")
+            console.print(f"❌ No photos found after {after_date}")
         else:
-            print("No photos found matching criteria")
+            console.print("❌ No photos found matching criteria")
         return
 
-    print(f"After filtering: {len(filtered_files)} files in {len(weekly_groups)} weeks")
+    console.print(
+        f"✅ After filtering: {len(filtered_files)} files in {len(weekly_groups)} weeks"
+    )
 
     # Show what weeks we found
     for week_num in sorted(weekly_groups.keys()):
         files_count = len(weekly_groups[week_num])
         # Calculate the actual date of this week
         week_date = WEEKLY_START_DATE + timedelta(weeks=week_num - 1)
-        print(
-            f"  Week {week_num} ({week_date.strftime('%Y-%m-%d')}): {files_count} files"
+        console.print(
+            f"  📅 Week {week_num} ({week_date.strftime('%Y-%m-%d')}): {files_count} files"
         )
 
     if dry_run:
-        print("\nDRY RUN - Would create these directories and copy files:")
+        current_dir = Path.cwd()
+        console.print("\n🔍 DRY RUN - Would create these directories and copy files:")
+        # Show dry run details without progress bars
+        for week_num in sorted(weekly_groups.keys()):
+            week_dir = current_dir / f"Week {week_num:02d}"
+            console.print(f"Would create directory: {week_dir}")
+            for file_path in weekly_groups[week_num]:
+                console.print(f"  Would copy: {file_path.name}")
+        return
 
-    # Create week directories and copy files
+    # Create week directories and copy files with progress
     current_dir = Path.cwd()
     created_week_dirs = []
 
-    for week_num in sorted(weekly_groups.keys()):
-        week_dir = current_dir / f"Week {week_num:02d}"
+    console.print("\n📂 Copying files to week directories...")
 
-        if dry_run:
-            print(f"\nWould create directory: {week_dir}")
-        else:
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        copy_task = progress.add_task("Copying files...", total=len(filtered_files))
+
+        for week_num in sorted(weekly_groups.keys()):
+            week_dir = current_dir / f"Week {week_num:02d}"
             week_dir.mkdir(exist_ok=True)
-            print(f"\nCreated directory: {week_dir}")
             created_week_dirs.append(week_dir)
 
-        for file_path in weekly_groups[week_num]:
-            destination = week_dir / file_path.name
+            progress.update(copy_task, description=f"Copying to Week {week_num:02d}...")
 
-            if dry_run:
-                print(f"  Would copy: {file_path.name}")
-            else:
+            for file_path in weekly_groups[week_num]:
+                destination = week_dir / file_path.name
+
                 try:
                     shutil.copy2(str(file_path), str(destination))
-                    print(f"  Copied: {file_path.name}")
+                    progress.advance(copy_task)
                 except Exception as e:
-                    print(f"  Error copying {file_path.name}: {e}")
+                    console.print(f"❌ Error copying {file_path.name}: {e}")
+                    progress.advance(copy_task)
 
     # If organize flag is set, organize each week directory
-    if organize and not dry_run:
-        print("\nOrganizing imported photos...")
-        for week_dir in created_week_dirs:
-            week_num = int(week_dir.name.split()[-1])  # Extract week number
+    if organize:
+        console.print("\n📁 Organizing imported photos...")
 
-            # Create week-specific prefix if base prefix provided
-            if prefix:
-                week_prefix = f"{prefix}-week-{week_num:02d}"
-            else:
-                week_prefix = None
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            organize_task = progress.add_task(
+                "Organizing weeks...", total=len(created_week_dirs)
+            )
 
-            print(f"\nOrganizing {week_dir.name}...")
-            organize_photos(str(week_dir), prefix=week_prefix, dry_run=False)
+            for week_dir in created_week_dirs:
+                week_num = int(week_dir.name.split()[-1])  # Extract week number
+
+                # Create week-specific prefix if base prefix provided
+                if prefix:
+                    week_prefix = f"{prefix}-week-{week_num:02d}"
+                else:
+                    week_prefix = None
+
+                progress.update(
+                    organize_task, description=f"Organizing {week_dir.name}..."
+                )
+                organize_photos(str(week_dir), prefix=week_prefix, dry_run=False)
+                progress.advance(organize_task)
 
     elif organize and dry_run:
-        print("\nWould organize each week directory:")
+        console.print("\n🔍 Would organize each week directory:")
         for week_num in sorted(weekly_groups.keys()):
             week_dir = current_dir / f"Week {week_num:02d}"
             if prefix:
                 week_prefix = f"{prefix}-week-{week_num:02d}"
-                print(f"  Would organize {week_dir.name} with prefix '{week_prefix}'")
+                console.print(
+                    f"  Would organize {week_dir.name} with prefix '{week_prefix}'"
+                )
             else:
-                print(f"  Would organize {week_dir.name}")
+                console.print(f"  Would organize {week_dir.name}")
 
-    if not dry_run:
-        action = "imported and organized" if organize else "imported"
-        print(f"\nImport complete! Photos {action} by week in current directory")
+    action = "imported and organized" if organize else "imported"
+    console.print(f"\n🎉 Import complete! Photos {action} by week in current directory")
 
 
 def find_photo_files(directory: Path) -> Tuple[List[Path], List[Path]]:
@@ -355,91 +430,114 @@ def organize_photos(
     target_path = Path(target_directory).resolve()
 
     if not target_path.exists():
-        print(f"Error: Directory '{target_directory}' does not exist")
+        console.print(f"❌ Error: Directory '{target_directory}' does not exist")
         sys.exit(1)
 
     if not target_path.is_dir():
-        print(f"Error: '{target_directory}' is not a directory")
+        console.print(f"❌ Error: '{target_directory}' is not a directory")
         sys.exit(1)
 
     # Find all photo files
     jpeg_files, cr3_files = find_photo_files(target_path)
 
     if not jpeg_files and not cr3_files:
-        print(f"No JPEG or CR3 files found in '{target_directory}'")
+        console.print(f"❌ No JPEG or CR3 files found in '{target_directory}'")
         return
 
-    print(f"Found {len(jpeg_files)} JPEG files and {len(cr3_files)} CR3 files")
+    console.print(
+        f"✅ Found {len(jpeg_files)} JPEG files and {len(cr3_files)} CR3 files"
+    )
 
     # Create filename mappings for renaming
     jpeg_mapping = create_filename_mapping(jpeg_files, prefix)
     cr3_mapping = create_filename_mapping(cr3_files, prefix)
 
     if prefix:
-        print(f"Will rename files with prefix '{prefix}' and sequential numbering")
+        console.print(
+            f"🏷️  Will rename files with prefix '{prefix}' and sequential numbering"
+        )
 
     # Create subdirectories
     jpg_dir = target_path / "JPG"
     raw_dir = target_path / "RAW"
 
     if dry_run:
-        print("\nDRY RUN - Would perform these actions:")
+        console.print("\n🔍 DRY RUN - Would perform these actions:")
         if jpeg_files:
-            print(f"Would create directory: {jpg_dir}")
+            console.print(f"Would create directory: {jpg_dir}")
         if cr3_files:
-            print(f"Would create directory: {raw_dir}")
-    else:
-        if jpeg_files:
-            jpg_dir.mkdir(exist_ok=True)
-            print(f"Created directory: {jpg_dir}")
-        if cr3_files:
-            raw_dir.mkdir(exist_ok=True)
-            print(f"Created directory: {raw_dir}")
+            console.print(f"Would create directory: {raw_dir}")
 
-    # Move JPEG files
+        # Show what files would be moved
+        if jpeg_files:
+            console.print(f"\nWould move {len(jpeg_files)} JPEG files to JPG/:")
+            for jpeg_file in sorted(
+                jpeg_files, key=lambda f: extract_number_from_filename(f.name) or 0
+            ):
+                new_filename = jpeg_mapping[jpeg_file]
+                console.print(f"  Would move: {jpeg_file.name} -> JPG/{new_filename}")
+
+        if cr3_files:
+            console.print(f"\nWould move {len(cr3_files)} CR3 files to RAW/:")
+            for cr3_file in sorted(
+                cr3_files, key=lambda f: extract_number_from_filename(f.name) or 0
+            ):
+                new_filename = cr3_mapping[cr3_file]
+                console.print(f"  Would move: {cr3_file.name} -> RAW/{new_filename}")
+        return
+
+    # Create directories
     if jpeg_files:
-        print(f"\nMoving {len(jpeg_files)} JPEG files to JPG/:")
-        for jpeg_file in sorted(
-            jpeg_files, key=lambda f: extract_number_from_filename(f.name) or 0
-        ):
-            new_filename = jpeg_mapping[jpeg_file]
-            destination = jpg_dir / new_filename
-            if dry_run:
-                print(f"  Would move: {jpeg_file.name} -> JPG/{new_filename}")
-            else:
+        jpg_dir.mkdir(exist_ok=True)
+        console.print(f"📁 Created directory: {jpg_dir}")
+    if cr3_files:
+        raw_dir.mkdir(exist_ok=True)
+        console.print(f"📁 Created directory: {raw_dir}")
+
+    total_files = len(jpeg_files) + len(cr3_files)
+
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        move_task = progress.add_task(
+            "Moving and organizing files...", total=total_files
+        )
+
+        # Move JPEG files
+        if jpeg_files:
+            for jpeg_file in sorted(
+                jpeg_files, key=lambda f: extract_number_from_filename(f.name) or 0
+            ):
+                new_filename = jpeg_mapping[jpeg_file]
+                destination = jpg_dir / new_filename
                 try:
                     shutil.move(str(jpeg_file), str(destination))
-                    if prefix:
-                        print(
-                            f"  Moved and renamed: {jpeg_file.name} -> {new_filename}"
-                        )
-                    else:
-                        print(f"  Moved: {jpeg_file.name}")
+                    progress.advance(move_task)
                 except Exception as e:
-                    print(f"  Error moving {jpeg_file.name}: {e}")
+                    console.print(f"❌ Error moving {jpeg_file.name}: {e}")
+                    progress.advance(move_task)
 
-    # Move CR3 files
-    if cr3_files:
-        print(f"\nMoving {len(cr3_files)} CR3 files to RAW/:")
-        for cr3_file in sorted(
-            cr3_files, key=lambda f: extract_number_from_filename(f.name) or 0
-        ):
-            new_filename = cr3_mapping[cr3_file]
-            destination = raw_dir / new_filename
-            if dry_run:
-                print(f"  Would move: {cr3_file.name} -> RAW/{new_filename}")
-            else:
+        # Move CR3 files
+        if cr3_files:
+            for cr3_file in sorted(
+                cr3_files, key=lambda f: extract_number_from_filename(f.name) or 0
+            ):
+                new_filename = cr3_mapping[cr3_file]
+                destination = raw_dir / new_filename
                 try:
                     shutil.move(str(cr3_file), str(destination))
-                    if prefix:
-                        print(f"  Moved and renamed: {cr3_file.name} -> {new_filename}")
-                    else:
-                        print(f"  Moved: {cr3_file.name}")
+                    progress.advance(move_task)
                 except Exception as e:
-                    print(f"  Error moving {cr3_file.name}: {e}")
+                    console.print(f"❌ Error moving {cr3_file.name}: {e}")
+                    progress.advance(move_task)
 
-    if not dry_run:
-        print(f"\nOrganization complete! Photos organized in '{target_directory}'")
+    console.print(
+        f"\n🎉 Organization complete! Photos organized in '{target_directory}'"
+    )
 
 
 def main():
