@@ -154,6 +154,8 @@ def import_photos(
     source_directory: str,
     weekly: bool = False,
     after_date: Optional[str] = None,
+    organize: bool = False,
+    prefix: Optional[str] = None,
     dry_run: bool = False,
 ) -> None:
     """
@@ -163,6 +165,8 @@ def import_photos(
         source_directory: Path to source directory (e.g., SD card)
         weekly: If True, only import photos from weekly photo days (Wednesdays)
         after_date: Only import photos after this date (YYYY-MM-DD format)
+        organize: If True, automatically organize each week's photos into JPG/RAW subdirectories
+        prefix: Prefix for renaming files when organizing (e.g., "leon" -> "leon-week-29-0001.jpg")
         dry_run: If True, show what would be done without actually copying files
     """
     source_path = Path(source_directory).resolve()
@@ -187,6 +191,11 @@ def import_photos(
 
     if weekly:
         print("Weekly mode: Only importing photos from Wednesdays (weekly photo days)")
+
+    if organize:
+        print("Auto-organize mode: Will organize photos into JPG/RAW subdirectories")
+        if prefix:
+            print(f"Will use prefix '{prefix}' with week numbers for renaming")
 
     # Find all image files
     print(f"Scanning for image files in {source_directory}...")
@@ -249,6 +258,7 @@ def import_photos(
 
     # Create week directories and copy files
     current_dir = Path.cwd()
+    created_week_dirs = []
 
     for week_num in sorted(weekly_groups.keys()):
         week_dir = current_dir / f"Week {week_num:02d}"
@@ -258,6 +268,7 @@ def import_photos(
         else:
             week_dir.mkdir(exist_ok=True)
             print(f"\nCreated directory: {week_dir}")
+            created_week_dirs.append(week_dir)
 
         for file_path in weekly_groups[week_num]:
             destination = week_dir / file_path.name
@@ -271,8 +282,34 @@ def import_photos(
                 except Exception as e:
                     print(f"  Error copying {file_path.name}: {e}")
 
+    # If organize flag is set, organize each week directory
+    if organize and not dry_run:
+        print("\nOrganizing imported photos...")
+        for week_dir in created_week_dirs:
+            week_num = int(week_dir.name.split()[-1])  # Extract week number
+
+            # Create week-specific prefix if base prefix provided
+            if prefix:
+                week_prefix = f"{prefix}-week-{week_num:02d}"
+            else:
+                week_prefix = None
+
+            print(f"\nOrganizing {week_dir.name}...")
+            organize_photos(str(week_dir), prefix=week_prefix, dry_run=False)
+
+    elif organize and dry_run:
+        print("\nWould organize each week directory:")
+        for week_num in sorted(weekly_groups.keys()):
+            week_dir = current_dir / f"Week {week_num:02d}"
+            if prefix:
+                week_prefix = f"{prefix}-week-{week_num:02d}"
+                print(f"  Would organize {week_dir.name} with prefix '{week_prefix}'")
+            else:
+                print(f"  Would organize {week_dir.name}")
+
     if not dry_run:
-        print("\nImport complete! Photos organized by week in current directory")
+        action = "imported and organized" if organize else "imported"
+        print(f"\nImport complete! Photos {action} by week in current directory")
 
 
 def find_photo_files(directory: Path) -> Tuple[List[Path], List[Path]]:
@@ -428,6 +465,15 @@ def main():
         "--after", help="Only import photos after this date (YYYY-MM-DD format)"
     )
     import_parser.add_argument(
+        "--organize",
+        action="store_true",
+        help="Automatically organize imported photos into JPG/RAW subdirectories",
+    )
+    import_parser.add_argument(
+        "--prefix",
+        help="Prefix for renaming files when organizing (e.g., 'leon' -> 'leon-week-29-0001.jpg')",
+    )
+    import_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be done without actually copying files",
@@ -458,7 +504,12 @@ def main():
 
     if args.command == "import":
         import_photos(
-            args.source, weekly=args.weekly, after_date=args.after, dry_run=args.dry_run
+            args.source,
+            weekly=args.weekly,
+            after_date=args.after,
+            organize=args.organize,
+            prefix=args.prefix,
+            dry_run=args.dry_run,
         )
     elif args.command == "organize":
         organize_photos(args.directory, prefix=args.prefix, dry_run=args.dry_run)
