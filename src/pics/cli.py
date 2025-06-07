@@ -298,8 +298,10 @@ def import_photos(
             f"  📅 Week {week_num} ({week_date.strftime('%Y-%m-%d')}): {files_count} files"
         )
 
+    # Define current directory for use in both dry run and actual execution
+    current_dir = Path.cwd()
+
     if dry_run:
-        current_dir = Path.cwd()
         console.print("\n🔍 DRY RUN - Would create these directories and copy files:")
         # Show dry run details without progress bars
         for week_num in sorted(weekly_groups.keys()):
@@ -310,7 +312,6 @@ def import_photos(
         return
 
     # Create week directories and copy files with progress
-    current_dir = Path.cwd()
     created_week_dirs = []
 
     console.print("\n📂 Copying files to week directories...")
@@ -368,7 +369,9 @@ def import_photos(
                 progress.update(
                     organize_task, description=f"Organizing {week_dir.name}..."
                 )
-                organize_photos(str(week_dir), prefix=week_prefix, dry_run=False)
+                organize_photos(
+                    str(week_dir), prefix=week_prefix, dry_run=False, silent=True
+                )
                 progress.advance(organize_task)
 
     elif organize and dry_run:
@@ -416,7 +419,10 @@ def find_photo_files(directory: Path) -> Tuple[List[Path], List[Path]]:
 
 
 def organize_photos(
-    target_directory: str, prefix: Optional[str] = None, dry_run: bool = False
+    target_directory: str,
+    prefix: Optional[str] = None,
+    dry_run: bool = False,
+    silent: bool = False,
 ) -> None:
     """
     Organize photos in the target directory by moving JPEGs to JPG/ and CR3s to RAW/.
@@ -426,6 +432,7 @@ def organize_photos(
         target_directory: Directory containing the photos to organize
         prefix: Optional prefix for renaming files (e.g., "vacation" -> "vacation-0001.jpg")
         dry_run: If True, only show what would be done without actually moving files
+        silent: If True, don't show progress bars (for use in batch operations)
     """
     target_path = Path(target_directory).resolve()
 
@@ -441,18 +448,20 @@ def organize_photos(
     jpeg_files, cr3_files = find_photo_files(target_path)
 
     if not jpeg_files and not cr3_files:
-        console.print(f"❌ No JPEG or CR3 files found in '{target_directory}'")
+        if not silent:
+            console.print(f"❌ No JPEG or CR3 files found in '{target_directory}'")
         return
 
-    console.print(
-        f"✅ Found {len(jpeg_files)} JPEG files and {len(cr3_files)} CR3 files"
-    )
+    if not silent:
+        console.print(
+            f"✅ Found {len(jpeg_files)} JPEG files and {len(cr3_files)} CR3 files"
+        )
 
     # Create filename mappings for renaming
     jpeg_mapping = create_filename_mapping(jpeg_files, prefix)
     cr3_mapping = create_filename_mapping(cr3_files, prefix)
 
-    if prefix:
+    if prefix and not silent:
         console.print(
             f"🏷️  Will rename files with prefix '{prefix}' and sequential numbering"
         )
@@ -462,82 +471,115 @@ def organize_photos(
     raw_dir = target_path / "RAW"
 
     if dry_run:
-        console.print("\n🔍 DRY RUN - Would perform these actions:")
-        if jpeg_files:
-            console.print(f"Would create directory: {jpg_dir}")
-        if cr3_files:
-            console.print(f"Would create directory: {raw_dir}")
+        if not silent:
+            console.print("\n🔍 DRY RUN - Would perform these actions:")
+            if jpeg_files:
+                console.print(f"Would create directory: {jpg_dir}")
+            if cr3_files:
+                console.print(f"Would create directory: {raw_dir}")
 
-        # Show what files would be moved
-        if jpeg_files:
-            console.print(f"\nWould move {len(jpeg_files)} JPEG files to JPG/:")
-            for jpeg_file in sorted(
-                jpeg_files, key=lambda f: extract_number_from_filename(f.name) or 0
-            ):
-                new_filename = jpeg_mapping[jpeg_file]
-                console.print(f"  Would move: {jpeg_file.name} -> JPG/{new_filename}")
+            # Show what files would be moved
+            if jpeg_files:
+                console.print(f"\nWould move {len(jpeg_files)} JPEG files to JPG/:")
+                for jpeg_file in sorted(
+                    jpeg_files, key=lambda f: extract_number_from_filename(f.name) or 0
+                ):
+                    new_filename = jpeg_mapping[jpeg_file]
+                    console.print(
+                        f"  Would move: {jpeg_file.name} -> JPG/{new_filename}"
+                    )
 
-        if cr3_files:
-            console.print(f"\nWould move {len(cr3_files)} CR3 files to RAW/:")
-            for cr3_file in sorted(
-                cr3_files, key=lambda f: extract_number_from_filename(f.name) or 0
-            ):
-                new_filename = cr3_mapping[cr3_file]
-                console.print(f"  Would move: {cr3_file.name} -> RAW/{new_filename}")
+            if cr3_files:
+                console.print(f"\nWould move {len(cr3_files)} CR3 files to RAW/:")
+                for cr3_file in sorted(
+                    cr3_files, key=lambda f: extract_number_from_filename(f.name) or 0
+                ):
+                    new_filename = cr3_mapping[cr3_file]
+                    console.print(
+                        f"  Would move: {cr3_file.name} -> RAW/{new_filename}"
+                    )
         return
 
     # Create directories
     if jpeg_files:
         jpg_dir.mkdir(exist_ok=True)
-        console.print(f"📁 Created directory: {jpg_dir}")
+        if not silent:
+            console.print(f"📁 Created directory: {jpg_dir}")
     if cr3_files:
         raw_dir.mkdir(exist_ok=True)
-        console.print(f"📁 Created directory: {raw_dir}")
+        if not silent:
+            console.print(f"📁 Created directory: {raw_dir}")
 
     total_files = len(jpeg_files) + len(cr3_files)
 
-    with Progress(
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        move_task = progress.add_task(
-            "Moving and organizing files...", total=total_files
-        )
-
+    if silent:
+        # Silent mode - no progress bar, just move files
         # Move JPEG files
-        if jpeg_files:
-            for jpeg_file in sorted(
-                jpeg_files, key=lambda f: extract_number_from_filename(f.name) or 0
-            ):
-                new_filename = jpeg_mapping[jpeg_file]
-                destination = jpg_dir / new_filename
-                try:
-                    shutil.move(str(jpeg_file), str(destination))
-                    progress.advance(move_task)
-                except Exception as e:
-                    console.print(f"❌ Error moving {jpeg_file.name}: {e}")
-                    progress.advance(move_task)
+        for jpeg_file in sorted(
+            jpeg_files, key=lambda f: extract_number_from_filename(f.name) or 0
+        ):
+            new_filename = jpeg_mapping[jpeg_file]
+            destination = jpg_dir / new_filename
+            try:
+                shutil.move(str(jpeg_file), str(destination))
+            except Exception:
+                pass  # Silent fail in batch mode
 
         # Move CR3 files
-        if cr3_files:
-            for cr3_file in sorted(
-                cr3_files, key=lambda f: extract_number_from_filename(f.name) or 0
-            ):
-                new_filename = cr3_mapping[cr3_file]
-                destination = raw_dir / new_filename
-                try:
-                    shutil.move(str(cr3_file), str(destination))
-                    progress.advance(move_task)
-                except Exception as e:
-                    console.print(f"❌ Error moving {cr3_file.name}: {e}")
-                    progress.advance(move_task)
+        for cr3_file in sorted(
+            cr3_files, key=lambda f: extract_number_from_filename(f.name) or 0
+        ):
+            new_filename = cr3_mapping[cr3_file]
+            destination = raw_dir / new_filename
+            try:
+                shutil.move(str(cr3_file), str(destination))
+            except Exception:
+                pass  # Silent fail in batch mode
+    else:
+        # Interactive mode with progress bar
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            move_task = progress.add_task(
+                "Moving and organizing files...", total=total_files
+            )
 
-    console.print(
-        f"\n🎉 Organization complete! Photos organized in '{target_directory}'"
-    )
+            # Move JPEG files
+            if jpeg_files:
+                for jpeg_file in sorted(
+                    jpeg_files, key=lambda f: extract_number_from_filename(f.name) or 0
+                ):
+                    new_filename = jpeg_mapping[jpeg_file]
+                    destination = jpg_dir / new_filename
+                    try:
+                        shutil.move(str(jpeg_file), str(destination))
+                        progress.advance(move_task)
+                    except Exception as e:
+                        console.print(f"❌ Error moving {jpeg_file.name}: {e}")
+                        progress.advance(move_task)
+
+            # Move CR3 files
+            if cr3_files:
+                for cr3_file in sorted(
+                    cr3_files, key=lambda f: extract_number_from_filename(f.name) or 0
+                ):
+                    new_filename = cr3_mapping[cr3_file]
+                    destination = raw_dir / new_filename
+                    try:
+                        shutil.move(str(cr3_file), str(destination))
+                        progress.advance(move_task)
+                    except Exception as e:
+                        console.print(f"❌ Error moving {cr3_file.name}: {e}")
+                        progress.advance(move_task)
+
+    if not silent:
+        console.print(
+            f"\n🎉 Organization complete! Photos organized in '{target_directory}'"
+        )
 
 
 def main():
